@@ -1,6 +1,95 @@
 This file lists notable changes in each release. For the full history of all
 changes, see ChangeLog.
 
+2018-07-15: v0.8.2 release
+* Drivers:
+  - Add USB ID for TNP Nano USB Fingerprint Reader
+  - Fix UPEKTS enrollment never finishing on some devices
+
+* Library:
+  - Fix fp_get_pollfds() retval type, a small ABI change
+  - Downgrade fatal errors to run-time warnings, as a number of drivers
+    used to throw silent errors and we made them fatal. Those will now
+    be visible warnings, hopefully helping with fixing them.
+
+2018-06-12: v0.8.1 release
+- Brown paperbag release to install the udev rules file in the correct
+  directory if the udev pkg-config file doesn't have a trailing slash
+
+2018-06-12: v0.8.0 release
+- Port to meson as the build system
+- Port documentation to gtk-doc
+
+* Drivers:
+  - Add Elan driver
+  - Increase threshold to detect encryption on URU4000 devices
+  - Remove already replaced UPEKE2 driver
+  - Fix possible crash caused by vfs5011 when no lines were captured
+
+* Library:
+  - Fix a number of memory and file descriptor leaks and warnings
+  - Make NSS (and URU4000) driver optional
+  - Fix assembling of frames for non-reverse and non reverse stripes
+  - Split internal private header to clarify drivers API
+  - Simplify logging system, now all the builds can be used to output
+    debug information
+  - Mark fp_dscv_print functions as deprecated
+
+* Udev rules:
+  - Add some unsupported devices to the whitelist
+
+2017-05-14: v0.7.0 release
+* Drivers:
+  - Add VFS0050 driver
+  - Fix possible crash in AES3500 and AES4000
+  - Fix broken enrollment in VFS101
+  - Better verification with small sensor scanners
+  - Plenty of fixes in VFS5011
+  - Fix memory corruption in AES1610
+  - Improve calibration settings for AES1610
+  - Improve image assembling in upeksonly driver
+  - Autodetect whether image is encrypted in uru4k
+
+* Library:
+  - NBIS: Remove false minutia at the edge of partial image
+  - Introduce routines to assemble image from lines (used in VFS5011 and upeksonly)
+  - Fix a bug that can cause driver state machine to enter into endless loop. 
+
+* Udev rules:
+  - Add driver name to the USB properties
+
+* Plenty of build fixes
+
+2015-02-03: v0.6.0 release
+
+* Drivers:
+  - Reduce duplication between AES3500 and AES4000 drivers and
+    add support for AES3500 device
+  - Add support for UPEK 147e:2020 and Upek Eikon 2 devices
+  - Add EgisTec ES603 driver
+  - Add VFS5011 driver
+  - Always perform 5 scans for image enrollment
+  - Better verification with AES1660 driver
+  - Better verification for a number of AES drivers
+
+* Library:
+  - Always use Pixman for image manipulation, gdk-pixbuf and ImageMagick
+    are not supported any more.
+
+* Udev rules:
+  - Fix warning when USB hub or system does not support power management
+
+2013-08-11: v0.5.1 release
+
+* Drivers
+  - Add support for 147e:2020 to upeke2 driver
+  - Fix possible race condition, and cancellation in uru4000 driver
+
+* Udev rules:
+  - Add Microsoft keyboard to the suspend blacklist
+
+* Plenty of build fixes
+
 2012-12-03: v0.5.0 release
 
 * Drivers:

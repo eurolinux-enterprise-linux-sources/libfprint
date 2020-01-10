@@ -25,15 +25,8 @@
 
 #define FP_COMPONENT "aes1610"
 
-#include <errno.h>
-#include <string.h>
-
-#include <libusb.h>
-
-#include <aeslib.h>
-#include <fp_internal.h>
-
-#include "driver_ids.h"
+#include "drivers_api.h"
+#include "aeslib.h"
 
 static void start_capture(struct fp_img_dev *dev);
 static void complete_deactivation(struct fp_img_dev *dev);
@@ -66,6 +59,7 @@ static int adjust_gain(unsigned char *buffer, int status);
 #define FRAME_WIDTH	128
 #define FRAME_HEIGHT	8
 #define FRAME_SIZE	(FRAME_WIDTH * FRAME_HEIGHT)
+#define IMAGE_WIDTH	(FRAME_WIDTH + (FRAME_WIDTH / 2))
 /* maximum number of frames to read during a scan */
 /* FIXME reduce substantially */
 #define MAX_FRAMES		350
@@ -78,6 +72,13 @@ struct aes1610_dev {
 	size_t strips_len;
 	gboolean deactivating;
 	uint8_t blanks_count;
+};
+
+static struct fpi_frame_asmbl_ctx assembling_ctx = {
+	.frame_width = FRAME_WIDTH,
+	.frame_height = FRAME_HEIGHT,
+	.image_width = IMAGE_WIDTH,
+	.get_pixel = aes_get_pixel,
 };
 
 typedef void (*aes1610_read_regs_cb)(struct fp_img_dev *dev, int status,
@@ -129,6 +130,7 @@ static void generic_read_ignore_data(struct fpi_ssm *ssm, size_t bytes)
 {
 	struct libusb_transfer *transfer = libusb_alloc_transfer(0);
 	unsigned char *data;
+	struct fp_dev *dev;
 	int r;
 
 	if (!transfer) {
@@ -137,7 +139,8 @@ static void generic_read_ignore_data(struct fpi_ssm *ssm, size_t bytes)
 	}
 
 	data = g_malloc(bytes);
-	libusb_fill_bulk_transfer(transfer, ssm->dev->udev, EP_IN, data, bytes,
+	dev = fpi_ssm_get_dev(ssm);
+	libusb_fill_bulk_transfer(transfer, fpi_dev_get_usb_dev(dev), EP_IN, data, bytes,
 		generic_ignore_data_cb, ssm, BULK_TIMEOUT);
 
 	r = libusb_submit_transfer(transfer);
@@ -230,7 +233,7 @@ static void finger_det_reqs_cb(struct fp_img_dev *dev, int result, void *user_da
 	}
 
 	data = g_malloc(19);
-	libusb_fill_bulk_transfer(transfer, dev->udev, EP_IN, data, 19,
+	libusb_fill_bulk_transfer(transfer, fpi_imgdev_get_usb_dev(dev), EP_IN, data, 19,
 		finger_det_data_cb, dev, BULK_TIMEOUT);
 
 	r = libusb_submit_transfer(transfer);
@@ -244,7 +247,7 @@ static void finger_det_reqs_cb(struct fp_img_dev *dev, int result, void *user_da
 
 static void start_finger_detection(struct fp_img_dev *dev)
 {
-	struct aes1610_dev *aesdev = dev->priv;
+	struct aes1610_dev *aesdev = fpi_imgdev_get_user_data(dev);
 
 	if (aesdev->deactivating) {
 		complete_deactivation(dev);
@@ -404,7 +407,7 @@ static unsigned char list_BE_values[10] = {
 /*
  * The different possible values for 0xBD register */
 static unsigned char list_BD_values[10] = {
-	0x48, 0x4B, 0x4F, 0x52, 0x57, 0x59, 0x5B
+	0x28, 0x2b, 0x30, 0x3b, 0x45, 0x49, 0x4B
 };
 
 /*
@@ -425,25 +428,25 @@ static int adjust_gain(unsigned char *buffer, int status)
 			strip_scan_reqs[0].value = 0x6B;
 			strip_scan_reqs[1].value = 0x06;
 			strip_scan_reqs[2].value = 0x35;
-			strip_scan_reqs[3].value = 0x5B;
+			strip_scan_reqs[3].value = 0x4B;
 		}
 		else if (buffer[1] > 0x55) {
 			strip_scan_reqs[0].value = 0x63;
 			strip_scan_reqs[1].value = 0x15;
 			strip_scan_reqs[2].value = 0x35;
-			strip_scan_reqs[3].value = 0x4F;
+			strip_scan_reqs[3].value = 0x3b;
 		}
 		else if (buffer[1] > 0x40 || buffer[16] > 0x19) {
 			strip_scan_reqs[0].value = 0x43;
 			strip_scan_reqs[1].value = 0x13;
 			strip_scan_reqs[2].value = 0x35;
-			strip_scan_reqs[3].value = 0x4B;
+			strip_scan_reqs[3].value = 0x30;
 		}
 		else { // minimum gain needed
 			strip_scan_reqs[0].value = 0x23;
 			strip_scan_reqs[1].value = 0x07;
 			strip_scan_reqs[2].value = 0x35;
-			strip_scan_reqs[3].value = 0x48;
+			strip_scan_reqs[3].value = 0x28;
 		}
 
 		// Now copy this values in capture_reqs
@@ -555,8 +558,8 @@ static void capture_read_strip_cb(struct libusb_transfer *transfer)
 {
 	unsigned char *stripdata;
 	struct fpi_ssm *ssm = transfer->user_data;
-	struct fp_img_dev *dev = ssm->priv;
-	struct aes1610_dev *aesdev = dev->priv;
+	struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
+	struct aes1610_dev *aesdev = fpi_imgdev_get_user_data(dev);
 	unsigned char *data = transfer->buffer;
 	int sum, i;
 
@@ -579,11 +582,14 @@ static void capture_read_strip_cb(struct libusb_transfer *transfer)
 	}
 
 	if (sum > 0) {
-	        /* FIXME: would preallocating strip buffers be a decent optimization? */
-	        stripdata = g_malloc(128 * 4);
-	        memcpy(stripdata, data + 1, 128 * 4);
-	        aesdev->strips = g_slist_prepend(aesdev->strips, stripdata);
-	        aesdev->strips_len++;
+		/* FIXME: would preallocating strip buffers be a decent optimization? */
+		struct fpi_frame *stripe = g_malloc(FRAME_WIDTH * (FRAME_HEIGHT / 2) + sizeof(struct fpi_frame));
+		stripe->delta_x = 0;
+		stripe->delta_y = 0;
+		stripdata = stripe->data;
+		memcpy(stripdata, data + 1, FRAME_WIDTH * (FRAME_HEIGHT / 2));
+		aesdev->strips = g_slist_prepend(aesdev->strips, stripe);
+		aesdev->strips_len++;
 		aesdev->blanks_count = 0;
 	}
 
@@ -614,8 +620,9 @@ static void capture_read_strip_cb(struct libusb_transfer *transfer)
 		/* send stop capture bits */
 		aes_write_regv(dev, capture_stop, G_N_ELEMENTS(capture_stop), stub_capture_stop_cb, NULL);
 		aesdev->strips = g_slist_reverse(aesdev->strips);
-		img = aes_assemble(aesdev->strips, aesdev->strips_len,
-			FRAME_WIDTH, FRAME_HEIGHT);
+		fpi_do_movement_estimation(&assembling_ctx, aesdev->strips, aesdev->strips_len);
+		img = fpi_assemble_frames(&assembling_ctx, aesdev->strips, aesdev->strips_len);
+		img->flags |= FP_IMG_PARTIAL;
 		g_slist_free_full(aesdev->strips, g_free);
 		aesdev->strips = NULL;
 		aesdev->strips_len = 0;
@@ -638,11 +645,11 @@ out:
 
 static void capture_run_state(struct fpi_ssm *ssm)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct aes1610_dev *aesdev = dev->priv;
+	struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
+	struct aes1610_dev *aesdev = fpi_imgdev_get_user_data(dev);
 	int r;
 
-	switch (ssm->cur_state) {
+	switch (fpi_ssm_get_cur_state(ssm)) {
 	case CAPTURE_WRITE_REQS:
 		fp_dbg("write reqs");
 		aes_write_regv(dev, capture_reqs, G_N_ELEMENTS(capture_reqs),
@@ -670,7 +677,7 @@ static void capture_run_state(struct fpi_ssm *ssm)
 		}
 
 		data = g_malloc(665);
-		libusb_fill_bulk_transfer(transfer, dev->udev, EP_IN, data, 665,
+		libusb_fill_bulk_transfer(transfer, fpi_imgdev_get_usb_dev(dev), EP_IN, data, 665,
 			capture_read_strip_cb, ssm, BULK_TIMEOUT);
 
 		r = libusb_submit_transfer(transfer);
@@ -685,14 +692,14 @@ static void capture_run_state(struct fpi_ssm *ssm)
 
 static void capture_sm_complete(struct fpi_ssm *ssm)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct aes1610_dev *aesdev = dev->priv;
+	struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
+	struct aes1610_dev *aesdev = fpi_imgdev_get_user_data(dev);
 
-	fp_dbg("");
+	G_DEBUG_HERE();
 	if (aesdev->deactivating)
 		complete_deactivation(dev);
-	else if (ssm->error)
-		fpi_imgdev_session_error(dev, ssm->error);
+	else if (fpi_ssm_get_error(ssm))
+		fpi_imgdev_session_error(dev, fpi_ssm_get_error(ssm));
 	else
 		start_finger_detection(dev);
 	fpi_ssm_free(ssm);
@@ -700,7 +707,7 @@ static void capture_sm_complete(struct fpi_ssm *ssm)
 
 static void start_capture(struct fp_img_dev *dev)
 {
-	struct aes1610_dev *aesdev = dev->priv;
+	struct aes1610_dev *aesdev = fpi_imgdev_get_user_data(dev);
 	struct fpi_ssm *ssm;
 
 	if (aesdev->deactivating) {
@@ -708,9 +715,9 @@ static void start_capture(struct fp_img_dev *dev)
 		return;
 	}
 
-	ssm = fpi_ssm_new(dev->dev, capture_run_state, CAPTURE_NUM_STATES);
-	fp_dbg("");
-	ssm->priv = dev;
+	ssm = fpi_ssm_new(fpi_imgdev_get_dev(dev), capture_run_state, CAPTURE_NUM_STATES);
+	G_DEBUG_HERE();
+	fpi_ssm_set_user_data(ssm, dev);
 	fpi_ssm_start(ssm, capture_sm_complete);
 }
 
@@ -720,10 +727,11 @@ static const struct aes_regwrite init[] = {
 	{ 0x82, 0x00 }
 };
 
+/*
 static const struct aes_regwrite stop_reader[] = {
 	{ 0xFF, 0x00 }
 };
-
+*/
 
 enum activate_states {
 	WRITE_INIT,
@@ -732,11 +740,11 @@ enum activate_states {
 
 static void activate_run_state(struct fpi_ssm *ssm)
 {
-	struct fp_img_dev *dev = ssm->priv;
+	struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
 
 	/* activation on aes1610 seems much more straightforward compared to aes2501 */
 	/* verify theres anything missing here */
-	switch (ssm->cur_state) {
+	switch (fpi_ssm_get_cur_state(ssm)) {
 	case WRITE_INIT:
 		fp_dbg("write init");
 		aes_write_regv(dev, init, G_N_ELEMENTS(init), generic_write_regv_cb, ssm);
@@ -747,21 +755,21 @@ static void activate_run_state(struct fpi_ssm *ssm)
 /* jump to finger detection */
 static void activate_sm_complete(struct fpi_ssm *ssm)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	fp_dbg("status %d", ssm->error);
-	fpi_imgdev_activate_complete(dev, ssm->error);
+	struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
+	fp_dbg("status %d", fpi_ssm_get_error(ssm));
+	fpi_imgdev_activate_complete(dev, fpi_ssm_get_error(ssm));
 
-	if (!ssm->error)
+	if (!fpi_ssm_get_error(ssm))
 		start_finger_detection(dev);
 	fpi_ssm_free(ssm);
 }
 
 static int dev_activate(struct fp_img_dev *dev, enum fp_imgdev_state state)
 {
-	struct aes1610_dev *aesdev = dev->priv;
-	struct fpi_ssm *ssm = fpi_ssm_new(dev->dev, activate_run_state,
+	struct aes1610_dev *aesdev = fpi_imgdev_get_user_data(dev);
+	struct fpi_ssm *ssm = fpi_ssm_new(fpi_imgdev_get_dev(dev), activate_run_state,
 		ACTIVATE_NUM_STATES);
-	ssm->priv = dev;
+	fpi_ssm_set_user_data(ssm, dev);
 	aesdev->read_regs_retry_count = 0;
 	fpi_ssm_start(ssm, activate_sm_complete);
 	return 0;
@@ -769,7 +777,7 @@ static int dev_activate(struct fp_img_dev *dev, enum fp_imgdev_state state)
 
 static void dev_deactivate(struct fp_img_dev *dev)
 {
-	struct aes1610_dev *aesdev = dev->priv;
+	struct aes1610_dev *aesdev = fpi_imgdev_get_user_data(dev);
 	/* FIXME: audit cancellation points, probably need more, specifically
 	 * in error handling paths? */
 	aesdev->deactivating = TRUE;
@@ -777,8 +785,8 @@ static void dev_deactivate(struct fp_img_dev *dev)
 
 static void complete_deactivation(struct fp_img_dev *dev)
 {
-	struct aes1610_dev *aesdev = dev->priv;
-	fp_dbg("");
+	struct aes1610_dev *aesdev = fpi_imgdev_get_user_data(dev);
+	G_DEBUG_HERE();
 
 	/* FIXME: if we're in the middle of a scan, we should cancel the scan.
 	 * maybe we can do this with a master reset, unconditionally? */
@@ -795,22 +803,26 @@ static int dev_init(struct fp_img_dev *dev, unsigned long driver_data)
 {
 	/* FIXME check endpoints */
 	int r;
+	struct aes1610_dev *aesdev;
 
-	r = libusb_claim_interface(dev->udev, 0);
+	r = libusb_claim_interface(fpi_imgdev_get_usb_dev(dev), 0);
 	if (r < 0) {
-		fp_err("could not claim interface 0");
+		fp_err("could not claim interface 0: %s", libusb_error_name(r));
 		return r;
 	}
 
-	dev->priv = g_malloc0(sizeof(struct aes1610_dev));
+	aesdev = g_malloc0(sizeof(struct aes1610_dev));
+	fpi_imgdev_set_user_data(dev, aesdev);
 	fpi_imgdev_open_complete(dev, 0);
 	return 0;
 }
 
 static void dev_deinit(struct fp_img_dev *dev)
 {
-	g_free(dev->priv);
-	libusb_release_interface(dev->udev, 0);
+	struct aes1610_dev *aesdev;
+	aesdev = fpi_imgdev_get_user_data(dev);
+	g_free(aesdev);
+	libusb_release_interface(fpi_imgdev_get_usb_dev(dev), 0);
 	fpi_imgdev_close_complete(dev);
 }
 
@@ -829,13 +841,9 @@ struct fp_img_driver aes1610_driver = {
 	},
 	.flags = 0,
 	.img_height = -1,
-	.img_width = 128,
+	.img_width = IMAGE_WIDTH,
 
-	/* temporarily lowered until we sort out image processing code
-	 * binarized scan quality is good, minutiae detection is accurate,
-	 * it's just that we get fewer minutiae than other scanners (less scanning
-	 * area) */
-	.bz3_threshold = 10,
+	.bz3_threshold = 20,
 
 	.open = dev_init,
 	.close = dev_deinit,

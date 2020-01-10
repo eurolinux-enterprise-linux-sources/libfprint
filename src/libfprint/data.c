@@ -32,8 +32,11 @@
 
 #define DIR_PERMS 0700
 
-/** @defgroup print_data Stored prints
- * Stored prints are represented by a structure named <tt>fp_print_data</tt>.
+/**
+ * SECTION: print_data
+ * @title: Stored prints
+ *
+ * Stored prints are represented by a structure named #fp_print_data.
  * Stored prints are originally obtained from an enrollment function such as
  * fp_enroll_finger().
  *
@@ -73,7 +76,6 @@ void fpi_data_exit(void)
 	((finger) >= LEFT_THUMB && (finger) <= RIGHT_LITTLE)
 
 /* for debug messages only */
-#ifdef ENABLE_DEBUG_LOGGING
 static const char *finger_num_to_str(enum fp_finger finger)
 {
 	const char *names[] = {
@@ -92,90 +94,191 @@ static const char *finger_num_to_str(enum fp_finger finger)
 		return "UNKNOWN";
 	return names[finger];
 }
-#endif
 
 static struct fp_print_data *print_data_new(uint16_t driver_id,
-	uint32_t devtype, enum fp_print_data_type type, size_t length)
+	uint32_t devtype, enum fp_print_data_type type)
 {
-	struct fp_print_data *data = g_malloc(sizeof(*data) + length);
-	fp_dbg("length=%zd driver=%02x devtype=%04x", length, driver_id, devtype);
-	memset(data, 0, sizeof(*data));
+	struct fp_print_data *data = g_malloc0(sizeof(*data));
+	fp_dbg("driver=%02x devtype=%04x", driver_id, devtype);
 	data->driver_id = driver_id;
 	data->devtype = devtype;
 	data->type = type;
-	data->length = length;
 	return data;
 }
 
-struct fp_print_data *fpi_print_data_new(struct fp_dev *dev, size_t length)
+void fpi_print_data_item_free(struct fp_print_data_item *item)
 {
-	return print_data_new(dev->drv->id, dev->devtype,
-		fpi_driver_get_data_type(dev->drv), length);
+	g_free(item);
 }
 
-/** \ingroup print_data
+struct fp_print_data_item *fpi_print_data_item_new(size_t length)
+{
+	struct fp_print_data_item *item = g_malloc0(sizeof(*item) + length);
+	item->length = length;
+
+	return item;
+}
+
+struct fp_print_data *fpi_print_data_new(struct fp_dev *dev)
+{
+	return print_data_new(dev->drv->id, dev->devtype,
+		fpi_driver_get_data_type(dev->drv));
+}
+
+/**
+ * fp_print_data_get_data:
+ * @data: the stored print
+ * @ret: output location for the data buffer. Must be freed with free()
+ * after use.
+
  * Convert a stored print into a unified representation inside a data buffer.
  * You can then store this data buffer in any way that suits you, and load
  * it back at some later time using fp_print_data_from_data().
- * \param data the stored print
- * \param ret output location for the data buffer. Must be freed with free()
- * after use.
- * \returns the size of the freshly allocated buffer, or 0 on error.
+ *
+ * Returns: the size of the freshly allocated buffer, or 0 on error.
  */
 API_EXPORTED size_t fp_print_data_get_data(struct fp_print_data *data,
 	unsigned char **ret)
 {
-	struct fpi_print_data_fp1 *buf;
-	size_t buflen;
+	struct fpi_print_data_fp2 *out_data;
+	struct fpi_print_data_item_fp2 *out_item;
+	struct fp_print_data_item *item;
+	size_t buflen = 0;
+	GSList *list_item;
+	unsigned char *buf;
 
-	fp_dbg("");
+	G_DEBUG_HERE();
 
-	buflen = sizeof(*buf) + data->length;
-	buf = malloc(buflen);
-	if (!buf)
-		return 0;
+	list_item = data->prints;
+	while (list_item) {
+		item = list_item->data;
+		buflen += sizeof(*out_item);
+		buflen += item->length;
+		list_item = g_slist_next(list_item);
+	}
 
-	*ret = (unsigned char *) buf;
-	buf->prefix[0] = 'F';
-	buf->prefix[1] = 'P';
-	buf->prefix[2] = '1';
-	buf->driver_id = GUINT16_TO_LE(data->driver_id);
-	buf->devtype = GUINT32_TO_LE(data->devtype);
-	buf->data_type = data->type;
-	memcpy(buf->data, data->data, data->length);
+	buflen += sizeof(*out_data);
+	out_data = g_malloc(buflen);
+
+	*ret = (unsigned char *) out_data;
+	buf = out_data->data;
+	out_data->prefix[0] = 'F';
+	out_data->prefix[1] = 'P';
+	out_data->prefix[2] = '2';
+	out_data->driver_id = GUINT16_TO_LE(data->driver_id);
+	out_data->devtype = GUINT32_TO_LE(data->devtype);
+	out_data->data_type = data->type;
+
+	list_item = data->prints;
+	while (list_item) {
+		item = list_item->data;
+		out_item = (struct fpi_print_data_item_fp2 *)buf;
+		out_item->length = GUINT32_TO_LE(item->length);
+		/* FIXME: fp_print_data_item->data content is not endianess agnostic */
+		memcpy(out_item->data, item->data, item->length);
+		buf += sizeof(*out_item);
+		buf += item->length;
+		list_item = g_slist_next(list_item);
+	}
+
 	return buflen;
 }
 
-/** \ingroup print_data
+static struct fp_print_data *fpi_print_data_from_fp1_data(unsigned char *buf,
+	size_t buflen)
+{
+	size_t print_data_len;
+	struct fp_print_data *data;
+	struct fp_print_data_item *item;
+	struct fpi_print_data_fp2 *raw = (struct fpi_print_data_fp2 *) buf;
+
+	print_data_len = buflen - sizeof(*raw);
+	data = print_data_new(GUINT16_FROM_LE(raw->driver_id),
+		GUINT32_FROM_LE(raw->devtype), raw->data_type);
+	item = fpi_print_data_item_new(print_data_len);
+	/* FIXME: fp_print_data->data content is not endianess agnostic */
+	memcpy(item->data, raw->data, print_data_len);
+	data->prints = g_slist_prepend(data->prints, item);
+
+	return data;
+}
+
+static struct fp_print_data *fpi_print_data_from_fp2_data(unsigned char *buf,
+	size_t buflen)
+{
+	size_t total_data_len, item_len;
+	struct fp_print_data *data;
+	struct fp_print_data_item *item;
+	struct fpi_print_data_fp2 *raw = (struct fpi_print_data_fp2 *) buf;
+	unsigned char *raw_buf;
+	struct fpi_print_data_item_fp2 *raw_item;
+
+	total_data_len = buflen - sizeof(*raw);
+	data = print_data_new(GUINT16_FROM_LE(raw->driver_id),
+		GUINT32_FROM_LE(raw->devtype), raw->data_type);
+	raw_buf = raw->data;
+	while (total_data_len) {
+		if (total_data_len < sizeof(*raw_item))
+			break;
+		total_data_len -= sizeof(*raw_item);
+
+		raw_item = (struct fpi_print_data_item_fp2 *)raw_buf;
+		item_len = GUINT32_FROM_LE(raw_item->length);
+		fp_dbg("item len %d, total_data_len %d", (int) item_len, (int) total_data_len);
+		if (total_data_len < item_len) {
+			fp_err("corrupted fingerprint data");
+			break;
+		}
+		total_data_len -= item_len;
+
+		item = fpi_print_data_item_new(item_len);
+		/* FIXME: fp_print_data->data content is not endianess agnostic */
+		memcpy(item->data, raw_item->data, item_len);
+		data->prints = g_slist_prepend(data->prints, item);
+
+		raw_buf += sizeof(*raw_item);
+		raw_buf += item_len;
+	}
+
+	if (g_slist_length(data->prints) == 0) {
+		fp_print_data_free(data);
+		data = NULL;
+	}
+
+	return data;
+
+}
+
+/**
+ * fp_print_data_from_data:
+ * @buf: the data buffer
+ * @buflen: the length of the buffer
+
  * Load a stored print from a data buffer. The contents of said buffer must
  * be the untouched contents of a buffer previously supplied to you by the
  * fp_print_data_get_data() function.
- * \param buf the data buffer
- * \param buflen the length of the buffer
- * \returns the stored print represented by the data, or NULL on error. Must
+ *
+ * Returns: the stored print represented by the data, or %NULL on error. Must
  * be freed with fp_print_data_free() after use.
  */
 API_EXPORTED struct fp_print_data *fp_print_data_from_data(unsigned char *buf,
 	size_t buflen)
 {
-	struct fpi_print_data_fp1 *raw = (struct fpi_print_data_fp1 *) buf;
-	size_t print_data_len;
-	struct fp_print_data *data;
+	struct fpi_print_data_fp2 *raw = (struct fpi_print_data_fp2 *) buf;
 
 	fp_dbg("buffer size %zd", buflen);
 	if (buflen < sizeof(*raw))
 		return NULL;
 
-	if (strncmp(raw->prefix, "FP1", 3) != 0) {
+	if (strncmp(raw->prefix, "FP1", 3) == 0) {
+		return fpi_print_data_from_fp1_data(buf, buflen);
+	} else if (strncmp(raw->prefix, "FP2", 3) == 0) {
+		return fpi_print_data_from_fp2_data(buf, buflen);
+	} else {
 		fp_dbg("bad header prefix");
-		return NULL;
 	}
 
-	print_data_len = buflen - sizeof(*raw);
-	data = print_data_new(GUINT16_FROM_LE(raw->driver_id),
-		GUINT32_FROM_LE(raw->devtype), raw->data_type, print_data_len);
-	memcpy(data->data, raw->data, print_data_len);
-	return data;
+	return NULL;
 }
 
 static char *get_path_to_storedir(uint16_t driver_id, uint32_t devtype)
@@ -209,7 +312,11 @@ static char *get_path_to_print(struct fp_dev *dev, enum fp_finger finger)
 	return __get_path_to_print(dev->drv->id, dev->devtype, finger);
 }
 
-/** \ingroup print_data
+/**
+ * fp_print_data_save:
+ * @data: the stored print to save to disk
+ * @finger: the finger that this print corresponds to
+ *
  * Saves a stored print to disk, assigned to a specific finger. Even though
  * you are limited to storing only the 10 human fingers, this is a
  * per-device-type limit. For example, you can store the users right index
@@ -220,9 +327,8 @@ static char *get_path_to_print(struct fp_dev *dev, enum fp_finger finger)
  * This function will unconditionally overwrite a fingerprint previously
  * saved for the same finger and device type. The print is saved in a hidden
  * directory beneath the current user's home directory.
- * \param data the stored print to save to disk
- * \param finger the finger that this print corresponds to
- * \returns 0 on success, non-zero on error.
+ *
+ * Returns: 0 on success, non-zero on error.
  */
 API_EXPORTED int fp_print_data_save(struct fp_print_data *data,
 	enum fp_finger finger)
@@ -319,7 +425,13 @@ static int load_from_file(char *path, struct fp_print_data **data)
 	return 0;
 }
 
-/** \ingroup print_data
+/**
+ * fp_print_data_load:
+ * @dev: the device you are loading the print for
+ * @finger: the finger of the file you are loading
+ * @data: output location to put the corresponding stored print. Must be
+ * freed with fp_print_data_free() after use.
+
  * Loads a previously stored print from disk. The print must have been saved
  * earlier using the fp_print_data_save() function.
  *
@@ -327,11 +439,7 @@ static int load_from_file(char *path, struct fp_print_data **data)
  * be found. Other error codes (both positive and negative) are possible for
  * obscure error conditions (e.g. corruption).
  *
- * \param dev the device you are loading the print for
- * \param finger the finger of the file you are loading
- * \param data output location to put the corresponding stored print. Must be
- * freed with fp_print_data_free() after use.
- * \returns 0 on success, non-zero on error
+ * Returns: 0 on success, non-zero on error
  */
 API_EXPORTED int fp_print_data_load(struct fp_dev *dev,
 	enum fp_finger finger, struct fp_print_data **data)
@@ -359,11 +467,14 @@ API_EXPORTED int fp_print_data_load(struct fp_dev *dev,
 	return 0;
 }
 
-/** \ingroup print_data
+/**
+ * fp_print_data_delete:
+ * @dev: the device that the print belongs to
+ * @finger: the finger of the file you are deleting
+
  * Removes a stored print from disk previously saved with fp_print_data_save().
- * \param dev the device that the print belongs to
- * \param finger the finger of the file you are deleting
- * \returns 0 on success, negative on error
+ *
+ * Returns: 0 on success, negative on error
  */
 API_EXPORTED int fp_print_data_delete(struct fp_dev *dev,
 	enum fp_finger finger)
@@ -381,18 +492,22 @@ API_EXPORTED int fp_print_data_delete(struct fp_dev *dev,
 	return r;
 }
 
-/** \ingroup print_data
- * Attempts to load a stored print based on a \ref dscv_print
- * "discovered print" record.
+/**
+ * fp_print_data_from_dscv_print:
+ * @print: the discovered print
+ * @data: output location to point to the corresponding stored print. Must
+ * be freed with fp_print_data_free() after use.
+
+ * Attempts to load a stored print based on a #fp_dscv_print
+ * discovered print record.
  *
  * A return code of -ENOENT indicates that the file referred to by the
  * discovered print could not be found. Other error codes (both positive and
  * negative) are possible for obscure error conditions (e.g. corruption).
  *
- * \param print the discovered print
- * \param data output location to point to the corresponding stored print. Must
- * be freed with fp_print_data_free() after use.
- * \returns 0 on success, non-zero on error.
+ * Returns: 0 on success, non-zero on error.
+ *
+ * Deprecated: Do not use.
  */
 API_EXPORTED int fp_print_data_from_dscv_print(struct fp_dscv_print *print,
 	struct fp_print_data **data)
@@ -400,40 +515,53 @@ API_EXPORTED int fp_print_data_from_dscv_print(struct fp_dscv_print *print,
 	return load_from_file(print->path, data);
 }
 
-/** \ingroup print_data
+/**
+ * fp_print_data_free:
+ * @data: the stored print to destroy. If NULL, function simply returns.
+ *
  * Frees a stored print. Must be called when you are finished using the print.
- * \param data the stored print to destroy. If NULL, function simply returns.
  */
 API_EXPORTED void fp_print_data_free(struct fp_print_data *data)
 {
+	if (data)
+		g_slist_free_full(data->prints, (GDestroyNotify)fpi_print_data_item_free);
 	g_free(data);
 }
 
-/** \ingroup print_data
- * Gets the \ref driver_id "driver ID" for a stored print. The driver ID
+/**
+ * fp_print_data_get_driver_id:
+ * @data: the stored print
+
+ * Gets the [driver ID](advanced-topics.html#driver_id) for a stored print. The driver ID
  * indicates which driver the print originally came from. The print is
  * only usable with a device controlled by that driver.
- * \param data the stored print
- * \returns the driver ID of the driver compatible with the print
+ *
+ * Returns: the driver ID of the driver compatible with the print
  */
 API_EXPORTED uint16_t fp_print_data_get_driver_id(struct fp_print_data *data)
 {
 	return data->driver_id;
 }
 
-/** \ingroup print_data
- * Gets the \ref devtype "devtype" for a stored print. The devtype represents
+/**
+ * fp_print_data_get_devtype:
+ * @data: the stored print
+
+ * Gets the [devtype](advanced-topics.html#device-types) for a stored print. The devtype represents
  * which type of device under the parent driver is compatible with the print.
- * \param data the stored print
- * \returns the devtype of the device range compatible with the print
+ *
+ * Returns: the devtype of the device range compatible with the print
  */
 API_EXPORTED uint32_t fp_print_data_get_devtype(struct fp_print_data *data)
 {
 	return data->devtype;
 }
 
-/** @defgroup dscv_print Print discovery
- * The \ref print_data "stored print" documentation detailed a simple API
+/**
+ * SECTION:dscv_print
+ * @title: Print discovery (deprecated)
+ *
+ * The [stored print](libfprint-Stored-prints.html) documentation detailed a simple API
  * for storing per-device prints for a single user, namely
  * fp_print_data_save(). It also detailed a load function,
  * fp_print_data_load(), but usage of this function is limited to scenarios
@@ -444,7 +572,7 @@ API_EXPORTED uint32_t fp_print_data_get_devtype(struct fp_print_data *data)
  * previously saved prints, potentially even before device discovery. These
  * functions are designed to offer this functionality to you.
  *
- * Discovered prints are stored in a <tt>dscv_print</tt> structure, and you
+ * Discovered prints are stored in a #fp_dscv_print structure, and you
  * can use functions documented below to access some information about these
  * prints. You can determine if a discovered print appears to be compatible
  * with a device using functions such as fp_dscv_dev_supports_dscv_print() and
@@ -462,6 +590,10 @@ API_EXPORTED uint32_t fp_print_data_get_devtype(struct fp_print_data *data)
  * circumstances it may turn out that the print is corrupt or not for the
  * device that it appeared to be. Also, it is possible that the print may have
  * been deleted by the time you come to load it.
+ *
+ * Note that this portion of the library is deprecated. All that it offers is
+ * already implementable using publicly available functions, and its usage is
+ * unnecessarily restrictive in terms of how it stores data.
  */
 
 static GSList *scan_dev_store_dir(char *devpath, uint16_t driver_id,
@@ -545,11 +677,16 @@ static GSList *scan_driver_store_dir(char *drvpath, uint16_t driver_id,
 	return list;
 }
 
-/** \ingroup dscv_print
+/**
+ * fp_discover_prints:
+ *
  * Scans the users home directory and returns a list of prints that were
  * previously saved using fp_print_data_save().
- * \returns a NULL-terminated list of discovered prints, must be freed with
+ *
+ * Returns: a %NULL-terminated list of discovered prints, must be freed with
  * fp_dscv_prints_free() after use.
+ *
+ * Deprecated: Do not use.
  */
 API_EXPORTED struct fp_dscv_print **fp_discover_prints(void)
 {
@@ -606,12 +743,16 @@ API_EXPORTED struct fp_dscv_print **fp_discover_prints(void)
 	return list;
 }
 
-/** \ingroup dscv_print
+/**
+ * fp_dscv_prints_free:
+ * @prints: the list of discovered prints. If NULL, function simply
+ * returns.
+ *
  * Frees a list of discovered prints. This function also frees the discovered
  * prints themselves, so make sure you do not use any discovered prints
  * after calling this function.
- * \param prints the list of discovered prints. If NULL, function simply
- * returns.
+ *
+ * Deprecated: Do not use.
  */
 API_EXPORTED void fp_dscv_prints_free(struct fp_dscv_print **prints)
 {
@@ -629,47 +770,67 @@ API_EXPORTED void fp_dscv_prints_free(struct fp_dscv_print **prints)
 	g_free(prints);
 }
 
-/** \ingroup dscv_print
- * Gets the \ref driver_id "driver ID" for a discovered print. The driver ID
+/**
+ * fp_dscv_print_get_driver_id:
+ * @print: the discovered print
+ *
+ * Gets the [driver ID](advanced-topics.html#driver_id) for a discovered print. The driver ID
  * indicates which driver the print originally came from. The print is only
  * usable with a device controlled by that driver.
- * \param print the discovered print
- * \returns the driver ID of the driver compatible with the print
+ *
+ * Returns: the driver ID of the driver compatible with the print
+ *
+ * Deprecated: Do not use.
  */
 API_EXPORTED uint16_t fp_dscv_print_get_driver_id(struct fp_dscv_print *print)
 {
 	return print->driver_id;
 }
 
-/** \ingroup dscv_print
- * Gets the \ref devtype "devtype" for a discovered print. The devtype
+/**
+ * fp_dscv_print_get_devtype:
+ * @print: the discovered print
+ *
+ * Gets the [devtype](advanced-topics.html#device-types) for a discovered print. The devtype
  * represents which type of device under the parent driver is compatible
  * with the print.
- * \param print the discovered print
- * \returns the devtype of the device range compatible with the print
+ *
+ * Returns: the devtype of the device range compatible with the print
+ *
+ * Deprecated: Do not use.
  */
 API_EXPORTED uint32_t fp_dscv_print_get_devtype(struct fp_dscv_print *print)
 {
 	return print->devtype;
 }
 
-/** \ingroup dscv_print
+/**
+ * fp_dscv_print_get_finger:
+ * @print: discovered print
+ *
  * Gets the finger code for a discovered print.
- * \param print discovered print
- * \returns a finger code from #fp_finger
+ *
+ * Returns: a finger code from #fp_finger
+ *
+ * Deprecated: Do not use.
  */
 API_EXPORTED enum fp_finger fp_dscv_print_get_finger(struct fp_dscv_print *print)
 {
 	return print->finger;
 }
 
-/** \ingroup dscv_print
+/**
+ * fp_dscv_print_delete:
+ * @print: the discovered print to remove from disk
+ *
  * Removes a discovered print from disk. After successful return of this
  * function, functions such as fp_dscv_print_get_finger() will continue to
  * operate as before, however calling fp_print_data_from_dscv_print() will
  * fail for obvious reasons.
- * \param print the discovered print to remove from disk
- * \returns 0 on success, negative on error
+ *
+ * Returns: 0 on success, negative on error
+ *
+ * Deprecated: Do not use.
  */
 API_EXPORTED int fp_dscv_print_delete(struct fp_dscv_print *print)
 {

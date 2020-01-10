@@ -23,7 +23,7 @@
 #define AESX660_HEADER_SIZE 3
 #define AESX660_RESPONSE_TYPE_OFFSET 0x00
 #define AESX660_RESPONSE_SIZE_LSB_OFFSET 0x01
-#define AESX660_RESPONSE_SIZE_MSB_OFFSEt 0x02
+#define AESX660_RESPONSE_SIZE_MSB_OFFSET 0x02
 
 #define AESX660_CALIBRATE_RESPONSE 0x06
 #define AESX660_FINGER_DET_RESPONSE 0x40
@@ -35,8 +35,13 @@
 #define AESX660_LAST_FRAME_OFFSET 0x04
 #define AESX660_LAST_FRAME_BIT 0x01
 
+#define AESX660_FRAME_DELTA_X_OFFSET 16
+#define AESX660_FRAME_DELTA_Y_OFFSET 17
+
 #define AESX660_IMAGE_OFFSET 43
 #define AESX660_BULK_TRANSFER_SIZE 4096
+
+#define AESX660_FRAME_HEIGHT 8
 
 struct aesX660_dev {
 	GSList *strips;
@@ -52,12 +57,12 @@ struct aesX660_dev {
 	size_t buffer_max;
 
 	/* Device-specific stuff */
-	int h_scale_factor;
 	struct aesX660_cmd *init_seqs[2];
 	size_t init_seqs_len[2];
 	unsigned char *start_imaging_cmd;
 	size_t start_imaging_cmd_len;
-	unsigned int frame_width;
+	struct fpi_frame_asmbl_ctx *assembling_ctx;
+	uint16_t extra_img_flags;
 };
 
 struct aesX660_cmd {

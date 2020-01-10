@@ -1,20 +1,18 @@
 Name:           libfprint
-Version:        0.5.0
-Release:        4%{?dist}
+Version:        0.8.2
+Release:        1%{?dist}
 Summary:        Toolkit for fingerprint scanner
 
 Group:          System Environment/Libraries
 License:        LGPLv2+
 URL:            http://www.freedesktop.org/wiki/Software/fprint/libfprint
-Source0:        http://freedesktop.org/~hadess/%{name}-%{version}.tar.xz
-BuildRoot:      %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
+Source0:        https://gitlab.freedesktop.org/libfprint/libfprint/uploads/a6084497941324538aefbdf7b954f1e9/%{name}-%{version}.tar.xz
 ExcludeArch:    s390 s390x
 
-BuildRequires:  libusb1-devel glib2-devel gtk2-devel nss-devel
-BuildRequires:  doxygen autoconf automake libtool
-
-# https://bugzilla.redhat.com/show_bug.cgi?id=1173367
-Patch0:         0001-Work-around-kernel-s-lack-of-USB-PM.patch
+BuildRequires:  libusb1-devel glib2-devel nss-devel pixman-devel
+# For the udev.pc to install the rules
+BuildRequires:  systemd
+BuildRequires:  gtk-doc meson
 
 %description
 libfprint offers support for consumer fingerprint reader devices.
@@ -22,8 +20,7 @@ libfprint offers support for consumer fingerprint reader devices.
 %package        devel
 Summary:        Development files for %{name}
 Group:          Development/Libraries
-Requires:       %{name} = %{version}-%{release}
-Requires:       pkgconfig
+Requires:       %{name}%{?_isa} = %{version}-%{release}
 
 
 %description    devel
@@ -33,43 +30,42 @@ developing applications that use %{name}.
 
 %prep
 %setup -q
-%patch0 -p1 -b .pm
 
 %build
-%configure --disable-static 
-make %{?_smp_mflags}
-pushd doc
-make docs
-popd
+%meson -Dx11-examples=false
+%meson_build
 
 %install
-rm -rf $RPM_BUILD_ROOT
-make install DESTDIR=$RPM_BUILD_ROOT
-find $RPM_BUILD_ROOT -name '*.la' -exec rm -f {} ';'
-
-%clean
-rm -rf $RPM_BUILD_ROOT
-
+%meson_install
 
 %post -p /sbin/ldconfig
 
 %postun -p /sbin/ldconfig
 
-
 %files
-%defattr(-,root,root,-)
-%doc COPYING INSTALL NEWS TODO THANKS AUTHORS README
+%license COPYING
+%doc NEWS TODO THANKS AUTHORS README
 %{_libdir}/*.so.*
-%{_prefix}/lib/udev/rules.d/60-fprint-autosuspend.rules
+%{_udevrulesdir}/60-fprint-autosuspend.rules
 
 %files devel
-%defattr(-,root,root,-)
-%doc HACKING doc/html
+%doc HACKING.md
 %{_includedir}/*
 %{_libdir}/*.so
 %{_libdir}/pkgconfig/%{name}.pc
+%{_datadir}/gtk-doc/html/libfprint/
 
 %changelog
+* Tue Jul 17 2018 Bastien Nocera <bnocera@redhat.com> - 0.8.2-1
++ libfprint-0.8.2-1
+- Update to 0.8.2
+- Resolves: #1100801
+
+* Fri Jun 15 2018 Bastien Nocera <bnocera@redhat.com> - 0.8.1-1
++ libfprint-0.8.1-1
+- Update to 0.8.1
+- Resolves: #1100801
+
 * Tue Apr 12 2016 Bastien Nocera <bnocera@redhat.com> - 0.5.0-4
 - Work-around the lack of USB PM in the kernel
 Resolves: #1173367

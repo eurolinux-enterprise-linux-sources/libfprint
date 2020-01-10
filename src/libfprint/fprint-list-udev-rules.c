@@ -24,12 +24,22 @@
 #include "fp_internal.h"
 
 static const struct usb_id whitelist_id_table[] = {
-    { .vendor = 0x08ff, .product = 0x2810 },
+    /* Unsupported (for now) Elantech finger print readers */
+    { .vendor = 0x04f3, .product = 0x0c03 },
+    { .vendor = 0x04f3, .product = 0x0c16 },
+    { .vendor = 0x04f3, .product = 0x0c26 },
+    /* Unsupported (for now) Validity Sensors finger print readers */
+    { .vendor = 0x138a, .product = 0x0090 }, /* Found on e.g. Lenovo T460s */
+    { .vendor = 0x138a, .product = 0x0091 },
+    { .vendor = 0x138a, .product = 0x0094 },
+    { .vendor = 0x138a, .product = 0x0097 }, /* Found on e.g. Lenovo T470s */
     { 0, 0, 0, },
 };
 
 static const struct usb_id blacklist_id_table[] = {
     { .vendor = 0x0483, .product = 0x2016 },
+    /* https://bugs.freedesktop.org/show_bug.cgi?id=66659 */
+    { .vendor = 0x045e, .product = 0x00bb },
     { 0, 0, 0 },
 };
 
@@ -52,7 +62,7 @@ static void print_driver (struct fp_driver *driver)
 	blacklist = 0;
 	for (j = 0; blacklist_id_table[j].vendor != 0; j++) {
 	    if (driver->id_table[i].vendor == blacklist_id_table[j].vendor &&
-		driver->id_table[j].product == blacklist_id_table[j].product) {
+		driver->id_table[i].product == blacklist_id_table[j].product) {
 		blacklist = 1;
 		break;
 	    }
@@ -72,7 +82,8 @@ static void print_driver (struct fp_driver *driver)
 	if (num_printed == 0)
 	    printf ("# %s\n", driver->full_name);
 
-	printf ("SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"%04x\", ATTRS{idProduct}==\"%04x\", ATTRS{dev}==\"*\", ATTR{power/control}=\"auto\"\n", driver->id_table[i].vendor, driver->id_table[i].product);
+	printf ("SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"%04x\", ATTRS{idProduct}==\"%04x\", ATTRS{dev}==\"*\", TEST==\"power/control\", ATTR{power/control}=\"auto\"\n", driver->id_table[i].vendor, driver->id_table[i].product);
+	printf ("SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"%04x\", ATTRS{idProduct}==\"%04x\", ENV{LIBFPRINT_DRIVER}=\"%s\"\n", driver->id_table[i].vendor, driver->id_table[i].product, driver->full_name);
 	num_printed++;
     }
 
