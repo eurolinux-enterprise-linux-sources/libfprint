@@ -1,6 +1,6 @@
 Name:           libfprint
 Version:        0.5.0
-Release:        3%{?dist}
+Release:        4%{?dist}
 Summary:        Toolkit for fingerprint scanner
 
 Group:          System Environment/Libraries
@@ -12,6 +12,9 @@ ExcludeArch:    s390 s390x
 
 BuildRequires:  libusb1-devel glib2-devel gtk2-devel nss-devel
 BuildRequires:  doxygen autoconf automake libtool
+
+# https://bugzilla.redhat.com/show_bug.cgi?id=1173367
+Patch0:         0001-Work-around-kernel-s-lack-of-USB-PM.patch
 
 %description
 libfprint offers support for consumer fingerprint reader devices.
@@ -30,6 +33,7 @@ developing applications that use %{name}.
 
 %prep
 %setup -q
+%patch0 -p1 -b .pm
 
 %build
 %configure --disable-static 
@@ -66,6 +70,10 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/pkgconfig/%{name}.pc
 
 %changelog
+* Tue Apr 12 2016 Bastien Nocera <bnocera@redhat.com> - 0.5.0-4
+- Work-around the lack of USB PM in the kernel
+Resolves: #1173367
+
 * Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 0.5.0-3
 - Mass rebuild 2013-12-27
 
